@@ -27,27 +27,21 @@ slack-term-c uses modes similar to vi, which change what the keyboard does. The 
 at the bottom of the screen.
 
 *Keyboard controls in normal mode:*
-q - quit
-i - enter 'insert mode'
-/ - enter 'search mode'
-s - select next channel down
-w - select next channel up
+- q - quit
+- i - enter 'insert mode'
+- / - enter 'search mode'
+- s - select next channel down
+- w - select next channel up
 
 *Keyboard controls in insert mode:*
-
-type to compose your message
-
-esc   - return to normal mode
-enter - send a message
+- type to compose your message
+- esc   - return to normal mode
+- enter - send a message
 
 *Keyboard controls in search mode:*
 _search mode is not yet functional_
-
-type to enter search query
-
-esc - return to normal mode
-
-Doesn't support too many features yet.
+- type to enter search query
+- esc - return to normal mode
 
 ## Architecture
 
@@ -94,8 +88,8 @@ This project is missing a lot of features to make it actually useful.
 This project draws from a few other open source projects. Some code is vendored where
 that approach is recommended by the authors.
 
-[termbox](https://github.com/termbox/termbox) is used for terminal user interface.
-[mongoose](https://github.com/cesanta/mongoose) is used for networking.
-[json-c](https://github.com/json-c/json-c) is used for JSON parsing.
-[sqlite3](https://www.sqlite.org/index.html) is used for data storage.
-[simclist](https://github.com/mij/simclist) is used for linked-list implementation.
+- [termbox](https://github.com/termbox/termbox) is used for terminal user interface.
+- [mongoose](https://github.com/cesanta/mongoose) is used for networking.
+- [json-c](https://github.com/json-c/json-c) is used for JSON parsing.
+- [sqlite3](https://www.sqlite.org/index.html) is used for data storage.
+- [simclist](https://github.com/mij/simclist) is used for linked-list implementation.
