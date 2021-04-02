@@ -1,17 +1,3 @@
-// TODO 
-// Direct Messages
-// Message scrollback
-// Loading indicator
-// Search
-// custom emoji / images 
-// attachments
-// mouse control
-// @user 
-// threading 
-// attachment preview
-// desktop notification
-// unread indicator
-//
 
 #include <stdio.h>
 #include <stdlib.h>
