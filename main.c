@@ -8,9 +8,9 @@
 #include <fcntl.h>
 #include <time.h>
 
-#include <termbox.h>
 #include <sqlite3.h>
 
+#include "termbox.h"
 #include "mongoose.h"
 #include "simclist.h"
 
@@ -154,6 +154,10 @@ char* format_url1(const char* format, const char* p1) {
 	return res;
 }
 
+/**
+ * Singleton values (like UI selections, current user identity) are
+ * stored in a special table of key-value pairs.
+ */
 void set_key_value_int(const char* key, int value) {
 	sqlite3_stmt* stmt;
 	sqlite_check(db, sqlite3_prepare_v2(db, 
@@ -186,6 +190,7 @@ int get_key_value_int(const char* key, int default_val) {
 	}
 	return res;
 }
+
 char* get_key_value_key_by_rowid(int rowid) {
 	sqlite3_stmt* stmt;
 	sqlite_check(db, sqlite3_prepare_v2(db, 
@@ -277,11 +282,8 @@ int get_conversation_selection_pos() {
 	return get_key_value_int("conversation_selection_pos", 0);
 }
 
-/*
- * Update the window start position for the conversation list
- */
 void set_conversation_window_start(int new_window_start) {
-	// Don't run off the start of the list
+	// Bounds check
 	if (new_window_start < 0) {
 		return;
 	}
@@ -426,11 +428,6 @@ int get_input_cursor_pos() {
 	return get_key_value_int("input_cursor_pos", 0);
 }
 
-/*
- * Shamelessly taken from stackoverflow https://stackoverflow.com/questions/22582989/word-wrap-program-c
- * I think this is a very dumb wordwrap that won't cope with words longer than the line. 
- * But it's simple at least.
- */
 int wordlen(list_t* str, int start){
 	int str_len = list_size(str);
 	int i=start;
@@ -444,7 +441,10 @@ int wordlen(list_t* str, int start){
 	return i-start;
 }
 
-// returns a list of lists
+/**
+ * Inspired by https://stackoverflow.com/questions/22582989/word-wrap-program-c
+ * Returns a list of lists.
+ */
 list_t* wrap(list_t* input, const int wrapline){
 	list_t* result = new_copying_list(list_t_size);
 	list_t* line = new_copying_list(u_int32_size);
@@ -725,14 +725,9 @@ void send_pending_messages(struct state_update su) {
 	if (v != SQLITE_DONE) {
 		sqlite_check(db, v);
 	}
+	sqlite3_finalize(stmt);
 	sqlite_check(db, sqlite3_exec(db, "update message set pending = 0 where pending = 1", NULL, NULL, NULL));
 	sqlite_check(db, sqlite3_exec(db, "commit", NULL, NULL, NULL));
-/*	{
-	"id": 2,
-	"type": "message",
-	"channel": "C024BE91L",
-	"text": "Hello <@U123ABC>"
-}*/
 }
 
 bool send_message() {
@@ -822,6 +817,7 @@ void handle_event_insert(struct tb_event* evt) {
 }
 
 void handle_event_search(struct tb_event* evt) {
+	// TODO !
 }
 
 void handle_event(struct tb_event* evt) {
@@ -926,15 +922,6 @@ static void handle_users(struct mg_connection* c, int ev, void* ev_data, void* f
 }
 
 void handle_ws_message(struct mg_str payload) {
-	/*
-	{
-	"type": "message",
-	"channel": "C2147483705",
-	"user": "U2147483697",
-	"text": "Hello world",
-	"ts": "1355517523.000005"
-	}
-	*/
 	sqlite3_stmt* stmt;
 	sqlite_check(db, sqlite3_prepare_v2(db, 
 				"with js(c) as (select json(?)) "
@@ -953,12 +940,10 @@ void handle_ws_message(struct mg_str payload) {
 }
 
 void handle_ws_hello(struct mg_str payload) {
-	// List conversations
 	mg_http_connect(&mgr, 
 			slack_conversations_list_url, 
 			handle_conversations, 
 			NULL);
-	// List users
 	mg_http_connect(&mgr,
 			slack_users_list_url,
 			handle_users,
@@ -966,24 +951,6 @@ void handle_ws_hello(struct mg_str payload) {
 }
 
 void handle_ws_reply(struct mg_str payload) {
-	/*
-	{
-	"ok": true,
-	"reply_to": 1,
-	"ts": "1355517523.000005",
-	"text": "Hello world"
-	}
-	*/
-	/*
-	{
-	"ok": false,
-	"reply_to": 1,
-	"error": {
-		"code": 2,
-		"msg": "message text is missing"
-	}
-	}
-	*/
 	dbg("handling reply %.*s", payload.len, payload.ptr);
 	sqlite3_stmt* stmt;
 	sqlite_check(db, sqlite3_prepare_v2(db, 
@@ -1002,16 +969,14 @@ void handle_ws_reply(struct mg_str payload) {
 }
 
 static void handle_ws(struct mg_connection* c, int ev, void* ev_data, void* fn_data) {
-	// Assign to global so we can use it for sending
 	if (ev == MG_EV_CONNECT) {
 		const char* url = (const char*)fn_data;
 		handle_connect(url, c);
 	} else if (ev == MG_EV_WS_MSG) {
 		struct mg_ws_message* wm = (struct mg_ws_message*)ev_data;
-		// If it's a hello, then we have a successful websocket connection
-		// and we can proceed to make other data fetches.
 		sqlite3_stmt* stmt;
-		sqlite_check(db, sqlite3_prepare_v2(db, "with js(c) as (select json(?)) "
+		sqlite_check(db, sqlite3_prepare_v2(db, 
+					"with js(c) as (select json(?)) "
 					"select "
 						"json_extract(c, '$.type'), "
 						"json_extract(c, '$.reply_to') "
@@ -1141,11 +1106,7 @@ static void handle_conversation_history(struct mg_connection* c, int ev, void* e
 	}
 }
 
-/*
- * If a conversation is selected, check if we have the history.
- * If we don't, then fetch it.
- */
-void fetch_conversation(struct state_update* u) {
+void fetch_selected_conversation(struct state_update* u) {
 	if (strcmp(u->tablename, "kvs") != 0) {
 		return;
 	}
@@ -1225,7 +1186,7 @@ int main(int argc, const char** argv) {
 	list_init(&state_listeners);
 
 	// Register state_listeners
-	list_append(&state_listeners, fetch_conversation);
+	list_append(&state_listeners, fetch_selected_conversation);
 	list_append(&state_listeners, send_pending_messages);
 
 	// Install update hook

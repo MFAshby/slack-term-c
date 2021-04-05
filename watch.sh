@@ -9,9 +9,9 @@ trap cleanup EXIT
 
 for (( ; ; ))
 do
-	if test-f "slack-term-c"; then
-		./build.sh 2>&1
-	fi	
+	./build.sh 2>&1
+	true > dbg.log
+	true > err.log
 
 	kill $st_pid
 	(alacritty -e ./slack-term-c && cat err.log)&
@@ -23,8 +23,7 @@ do
 
 	# Wait for file changes, clear the terminal, and build
 	inotifywait -q -r -e create,modify,move,delete *.h *.c && \
-	  echo -ne "\033c" && \
-	  ./build.sh 2>&1
+	  echo -ne "\033c"
 done
 
 # Re-exec ourselves for the next edit
