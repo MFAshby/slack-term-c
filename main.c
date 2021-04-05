@@ -8,7 +8,6 @@
 #include <fcntl.h>
 #include <time.h>
 
-#include <json-c/json.h>
 #include <termbox.h>
 #include <sqlite3.h>
 
@@ -1108,49 +1107,30 @@ static void handle_conversation_history(struct mg_connection* c, int ev, void* e
 		free(url);
 	} else if (ev == MG_EV_HTTP_MSG) {
 		struct mg_http_message* hm = ev_data;
-		struct json_tokener* tok = json_tokener_new();
-		struct json_object* jo = json_tokener_parse_ex(tok, hm->body.ptr, hm->body.len);
-		struct json_object* messages_json;
-		if (json_object_object_get_ex(jo, "messages", &messages_json)) {
-			sqlite_check(db, sqlite3_exec(db, "begin", NULL, NULL, NULL));
-			sqlite3_stmt* stmt;
-			sqlite_check(db, sqlite3_prepare_v2(db, "delete from message where conversation = ?", -1, &stmt, NULL));	
-			sqlite_check(db, sqlite3_bind_text(stmt, 1, selected_conversation_id, -1, NULL));
-			sqlite_check_ex(db, sqlite3_step(stmt), SQLITE_DONE);
-			sqlite3_finalize(stmt);
-			sqlite_check(db, sqlite3_prepare_v2(db, "insert into message (conversation, type, user, text, ts) values (?, ?, ?, ?, ?)", -1, &stmt, NULL));
-			int len = json_object_array_length(messages_json);
-			for (int i=0; i<len; i++) {
-				struct json_object* message_json = json_object_array_get_idx(messages_json, i);
-				struct json_object* channel_json;
-				struct json_object* type_json;
-				struct json_object* user_json;
-				struct json_object* text_json;
-				struct json_object* ts_json;
-				if (
-				     // Slack don't provide this when you call conversation.history
-				     // json_object_object_get_ex(message_json, "channel", &channel_json) &&
-				  json_object_object_get_ex(message_json, "type", &type_json) &&
-				  json_object_object_get_ex(message_json, "user", &user_json) &&
-				  json_object_object_get_ex(message_json, "text", &text_json) &&
-				  json_object_object_get_ex(message_json, "ts", &ts_json)) { 
-					sqlite_check(db, sqlite3_reset(stmt));
-					sqlite_check(db, sqlite3_clear_bindings(stmt));
-					sqlite_check(db, sqlite3_bind_text(stmt, 1, selected_conversation_id, -1, NULL));
-					sqlite_check(db, sqlite3_bind_text(stmt, 2, json_object_get_string(type_json), -1, NULL));
-					sqlite_check(db, sqlite3_bind_text(stmt, 3, json_object_get_string(user_json), -1, NULL));
-					sqlite_check(db, sqlite3_bind_text(stmt, 4, json_object_get_string(text_json), -1, NULL));
-					sqlite_check(db, sqlite3_bind_text(stmt, 5, json_object_get_string(ts_json), -1, NULL));
-					sqlite_check_ex(db, sqlite3_step(stmt), SQLITE_DONE);
-				} else {
-					dbg("Invalid message received %s", json_object_to_json_string(message_json));
-				}
-			}
-			sqlite3_finalize(stmt);
-			sqlite_check(db, sqlite3_exec(db, "commit", NULL, NULL, NULL));
-		}
-		json_object_put(jo);
-		json_tokener_free(tok);
+		dbg("handing conversation history %.*s", hm->body.len, hm->body.ptr);
+
+		sqlite_check(db, sqlite3_exec(db, "begin", NULL, NULL, NULL));
+		sqlite3_stmt* stmt;
+		sqlite_check(db, sqlite3_prepare_v2(db, "delete from message where conversation = ?", -1, &stmt, NULL));	
+		sqlite_check(db, sqlite3_bind_text(stmt, 1, selected_conversation_id, -1, NULL));
+		sqlite_check_ex(db, sqlite3_step(stmt), SQLITE_DONE);
+		sqlite3_finalize(stmt);
+
+		sqlite_check(db, sqlite3_prepare_v2(db, 
+					"insert into message "
+					"(conversation, type, user, text, ts) "
+					"select "
+						"?, "
+						"json_extract(value, '$.type'), "
+						"json_extract(value, '$.user'), "
+						"json_extract(value, '$.text'), "
+						"json_extract(value, '$.ts') "
+					"from json_each(?, '$.messages')", -1, &stmt, NULL));
+		sqlite_check(db, sqlite3_bind_text(stmt, 1, selected_conversation_id, -1, NULL));
+		sqlite_check(db, sqlite3_bind_text(stmt, 2, hm->body.ptr, hm->body.len, NULL));
+		sqlite_check_ex(db, sqlite3_step(stmt), SQLITE_DONE);
+		sqlite3_finalize(stmt);
+		sqlite_check(db, sqlite3_exec(db, "commit", NULL, NULL, NULL));
 		c->is_closing = true;
 		free(selected_conversation_id);
 	} else if (ev == MG_EV_ERROR) {

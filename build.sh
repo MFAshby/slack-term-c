@@ -1,7 +1,6 @@
 tcc \
 	-g \
 	-I . \
-	-ljson-c \
 	-lssl \
 	-lcrypto \
 	-lsqlite3 \

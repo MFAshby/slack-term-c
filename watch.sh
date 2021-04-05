@@ -14,7 +14,7 @@ do
 	fi	
 
 	kill $st_pid
-	alacritty -e ./slack-term-c&
+	(alacritty -e ./slack-term-c && cat err.log)&
 	st_pid=$!
 
 	kill $tail_pid

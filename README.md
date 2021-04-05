@@ -8,7 +8,7 @@ but written in C and sqlite because... why not?
 
 Works on linux, YMMV on any other platform.
 
-Dependencies: tcc, libc, json-c, sqlite3. Install these through whatever package manager you use.
+Dependencies: tcc, libc, sqlite3. Install these through whatever package manager you use.
 
 Just execute the bash script.
 ```bash
@@ -90,6 +90,5 @@ that approach is recommended by the authors.
 
 - [termbox](https://github.com/termbox/termbox) is used for terminal user interface.
 - [mongoose](https://github.com/cesanta/mongoose) is used for networking.
-- [json-c](https://github.com/json-c/json-c) is used for JSON parsing.
 - [sqlite3](https://www.sqlite.org/index.html) is used for data storage.
 - [simclist](https://github.com/mij/simclist) is used for linked-list implementation.
