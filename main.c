@@ -1058,21 +1058,12 @@ static void handle_rtm_connect(struct mg_connection *c, int ev, void *ev_data, v
 					"from js"
 					, -1, &stmt, NULL));
 		sqlite_check(db, sqlite3_bind_text(stmt, 1, payload.ptr, payload.len, NULL));
-		struct json_tokener* t = json_tokener_new();
-		struct json_object* start_response = json_tokener_parse_ex(t, hm->body.ptr, hm->body.len);
-		struct json_object* wss_url_json;
-		struct json_object* self_json; 
-		struct json_object* self_id_json;
-		if (json_object_object_get_ex(start_response, "url", &wss_url_json)) {
-			const char* wss_url = json_object_get_string(wss_url_json);
-			mg_ws_connect(&mgr, wss_url, handle_ws, (void*)wss_url, NULL);
-		}
-		if (json_object_object_get_ex(start_response, "self", &self_json)
-		  && json_object_object_get_ex(self_json, "id", &self_id_json)) {
-			set_current_user_id(strdup(json_object_get_string(self_id_json)));
-		}
-		json_object_put(start_response);
-		json_tokener_free(t);
+		sqlite_check_ex(db, sqlite3_step(stmt), SQLITE_ROW);
+		const char* wss_url = sqlite3_column_text(stmt, 0);
+		const char* current_user_id = sqlite3_column_text(stmt, 1);
+		// Need to take a copy of the dynamic URL for the connect method later
+		mg_ws_connect(&mgr, wss_url, handle_ws, (void*)strdup(wss_url), NULL);
+		set_current_user_id(current_user_id);
 		c->is_closing = 1;
 	} 
 }
