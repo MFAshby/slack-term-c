@@ -1,4 +1,3 @@
-
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -126,6 +125,20 @@ enum mode {
 	mode_normal = 0,
 	mode_insert = 1,
 	mode_search = 2
+};
+
+// We'll use multiple input buffers
+struct input_buffer {
+	const char* buffer_key;
+	const char* cursor_key;
+};
+struct input_buffer message_input_buffer = {
+	.buffer_key = "message_input_buffer",
+	.cursor_key = "message_input_cursor_pos",
+};
+struct input_buffer search_input_buffer = {
+	.buffer_key = "search_input_buffer",
+	.cursor_key = "search_input_cursor_pos",
 };
 
 // Networking stuff
@@ -454,20 +467,20 @@ char* to_char_array(list_t* lst) {
 	return strdup(buf);
 }
 
-void set_input_buffer(list_t* lst) {
+void set_input_buffer(list_t* lst, struct input_buffer b) {
 	char* ib = to_char_array(lst);
-	set_key_value_string("input_buffer", ib);
+	set_key_value_string(b.buffer_key, ib);
 	free(ib);
 }
-list_t* get_input_buffer() {
-	char* str = get_key_value_string("input_buffer", "");
+list_t* get_input_buffer(struct input_buffer b) {
+	char* str = get_key_value_string(b.buffer_key, "");
 	list_t* ret = to_utf8_list(str);
 	free(str);
 	return ret;
 }
 
-void set_input_cursor_pos(int n) {
-	list_t* input_buffer = get_input_buffer();
+void set_input_cursor_pos(int n, struct input_buffer b) {
+	list_t* input_buffer = get_input_buffer(b);
 	int max = list_size(input_buffer);
 	list_destroy(input_buffer);
 	if (n < 0) {
@@ -475,10 +488,10 @@ void set_input_cursor_pos(int n) {
 	} else if (n > max) {
 		return;
 	}
-	set_key_value_int("input_cursor_pos", n);
+	set_key_value_int(b.cursor_key, n);
 }
-int get_input_cursor_pos() {
-	return get_key_value_int("input_cursor_pos", 0);
+int get_input_cursor_pos(struct input_buffer b) {
+	return get_key_value_int(b.cursor_key, 0);
 }
 
 int wordlen(list_t* str, int start){
@@ -549,14 +562,26 @@ void render() {
 	int bottom_pos = 1;
 
 	// Write the input buffer
-	list_t* input_buffer = get_input_buffer();
+	struct input_buffer b;
+	int mode = get_current_mode();
+	switch (mode) {
+		case mode_normal:
+		case mode_insert:
+			b = message_input_buffer;
+			break;
+		case mode_search:
+			b = search_input_buffer;
+			break;
+	}
+	list_t* input_buffer = get_input_buffer(b);
+	int cursor_pos = get_input_cursor_pos(b);
 	int input_buffer_len = list_size(input_buffer);
 	for (int i=0; i<MIN(width, input_buffer_len); i++) {
 		u_int32_t* ch = list_get_at(input_buffer, i);
 		render_char(*ch, i, height-bottom_pos,
 				TEXTBOX_FG, TEXTBOX_BG);
 	}
-	tb_set_cursor(get_input_cursor_pos(), height-bottom_pos);
+	tb_set_cursor(cursor_pos, height-bottom_pos);
 	bottom_pos++;
 
 	// Write the status line	
@@ -725,28 +750,28 @@ void handle_event_mode_normal(struct tb_event* evt) {
 	}
 }
 
-bool delete_input_buffer(int pos) {
-	list_t* input_buffer = get_input_buffer();
+bool delete_input_buffer(int pos, struct input_buffer b) {
+	list_t* ib = get_input_buffer(b);
 	
-	if (list_size(input_buffer) <= pos) {
-		list_destroy(input_buffer);
+	if (list_size(ib) <= pos) {
+		list_destroy(ib);
 		return false;
 	} else if (pos < 0) {
 		return false;
 	}
-	void* ch = list_get_at(input_buffer, pos);
-	list_delete_at(input_buffer, pos);
-	set_input_buffer(input_buffer);
-	list_destroy(input_buffer);
+	void* ch = list_get_at(ib, pos);
+	list_delete_at(ib, pos);
+	set_input_buffer(ib, b);
+	list_destroy(ib);
 	return true;
 }
 
-void insert_input_buffer(u_int32_t ch) {
-	list_t* input_buffer = get_input_buffer();
-	int input_cursor_pos = get_input_cursor_pos();
-	list_insert_at(input_buffer, &ch, input_cursor_pos);
-	set_input_buffer(input_buffer);
-	list_destroy(input_buffer);
+void insert_input_buffer(u_int32_t ch, struct input_buffer b) {
+	list_t* ib = get_input_buffer(b);
+	int input_cursor_pos = get_input_cursor_pos(b);
+	list_insert_at(ib, &ch, input_cursor_pos);
+	set_input_buffer(ib, b);
+	list_destroy(ib);
 }
 
 void send_pending_messages(struct state_update su) {
@@ -783,18 +808,18 @@ void send_pending_messages(struct state_update su) {
 	sqlite_check(db, sqlite3_exec(db, "commit", NULL, NULL, NULL));
 }
 
-bool send_message() {
+bool send_message(struct input_buffer b) {
 	char* current_user_id = get_current_user_id();
 	if (ws_connection == NULL 
 	  || current_user_id == NULL) {
 		return false;
 	}
-	list_t* input_buffer = get_input_buffer();
+	list_t* ib = get_input_buffer(b);
 
 	char ts[12];
 	time_t t = time(NULL);
 	snprintf(ts, 12, "%ld", t);
-	char* text = to_char_array(input_buffer);
+	char* text = to_char_array(ib);
 	const char* selected_conversation_id = get_selected_conversation();
 	sqlite3_stmt* stmt;
 	sqlite_check(db, sqlite3_prepare_v2(db, "insert into message (conversation, type, user, text, ts, pending, acknowledged) "
@@ -812,15 +837,15 @@ bool send_message() {
 	free((void*)selected_conversation_id);
 	free(current_user_id);
 	free(text);
-	list_destroy(input_buffer);
+	list_destroy(ib);
 
 	return true;
 }
 
-void clear_input_buffer() {
+void clear_input_buffer(struct input_buffer b) {
 	list_t* lst = new_copying_list(0);
-	set_input_buffer(lst);
-	set_input_cursor_pos(0);
+	set_input_buffer(lst, b);
+	set_input_cursor_pos(0, b);
 }
 
 void handle_editor(list_t* buffer,
@@ -830,32 +855,32 @@ void handle_editor(list_t* buffer,
 
 }
 
-void handle_event_insert(struct tb_event* evt) {
+void update_input_buffer(struct tb_event* evt, 
+		struct input_buffer b,
+		void (*enter_callback)(struct input_buffer b)) {
 	sqlite3_str* str = sqlite3_str_new(db);
-	int input_cursor_pos = get_input_cursor_pos();
-	list_t* input_buffer = get_input_buffer();
+	int input_cursor_pos = get_input_cursor_pos(b);
+	list_t* ib = get_input_buffer(b);
 	if (evt->key == TB_KEY_ARROW_LEFT) {
-		set_input_cursor_pos(input_cursor_pos-1);
+		set_input_cursor_pos(input_cursor_pos-1, b);
 	} else if (evt->key == TB_KEY_ARROW_RIGHT) {
-		set_input_cursor_pos(input_cursor_pos+1);
+		set_input_cursor_pos(input_cursor_pos+1, b);
 	} else if (evt->key == TB_KEY_HOME) {
-		set_input_cursor_pos(0);
+		set_input_cursor_pos(0, b);
 	} else if (evt->key == TB_KEY_END) {
-		set_input_cursor_pos(list_size(input_buffer));
+		set_input_cursor_pos(list_size(ib), b);
 	} else if (evt->key == TB_KEY_BACKSPACE 
 	        || evt->key == TB_KEY_BACKSPACE2) {
-		if (delete_input_buffer(input_cursor_pos-1)) {
-			set_input_cursor_pos(input_cursor_pos-1);
+		if (delete_input_buffer(input_cursor_pos-1, b)) {
+			set_input_cursor_pos(input_cursor_pos-1, b);
 		}
 	} else if (evt->key == TB_KEY_DELETE) {
-		delete_input_buffer(input_cursor_pos);
-		if (list_size(input_buffer) < input_cursor_pos) {
-			set_input_cursor_pos(input_cursor_pos-1);
+		delete_input_buffer(input_cursor_pos, b);
+		if (list_size(ib) < input_cursor_pos) {
+			set_input_cursor_pos(input_cursor_pos-1, b);
 		}
 	} else if (evt->key == TB_KEY_ENTER) {
-		if (send_message()) {
-			clear_input_buffer();
-		}
+		enter_callback(b);
 	} else {
 		char ch;
 		if (evt->key == TB_KEY_SPACE) {
@@ -863,14 +888,28 @@ void handle_event_insert(struct tb_event* evt) {
 		} else {
 			ch = evt->ch;
 		}
-		insert_input_buffer(ch);
-		set_input_cursor_pos(input_cursor_pos+1);
+		insert_input_buffer(ch, b);
+		set_input_cursor_pos(input_cursor_pos+1, b);
 	}
-	list_destroy(input_buffer);
+	list_destroy(ib);
+}
+
+void send_and_clear(struct input_buffer b) {
+	if (send_message(b)) {
+		clear_input_buffer(b);
+	}
+}
+
+void handle_event_insert(struct tb_event* evt) {
+	update_input_buffer(evt, message_input_buffer, send_and_clear);
+}
+
+void update_conversations_list(struct input_buffer b) {
+	// Do nothing for now
 }
 
 void handle_event_search(struct tb_event* evt) {
-	// TODO !
+	update_input_buffer(evt, search_input_buffer, send_and_clear);
 }
 
 void handle_event(struct tb_event* evt) {
