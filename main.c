@@ -235,12 +235,16 @@ char* get_key_value_string(const char* key, char* default_value) {
 	char* res;
 	int v = sqlite3_step(stmt);
 	if (v == SQLITE_ROW) {
-		res = strdup(sqlite3_column_text(stmt, 0));
+		res = sqlite3_column_text(stmt, 0);
 	} else if (v == SQLITE_DONE) {
-		res = strdup(default_value);
+		res = default_value;
 	} else {
 		sqlite_check(db, v);
 	}
+	if (res != NULL) {
+		res = strdup(res);
+	}
+	sqlite3_finalize(stmt);
 	return res;
 }
 void set_current_mode(int m) {
@@ -259,27 +263,22 @@ char* get_current_user_id() {
 
 int count_conversations() {
 	sqlite3_stmt* stmt;
-	sqlite_check(db, sqlite3_prepare_v2(db, "select count(1) from conversation where is_member = 1", -1, &stmt, NULL));
+	sqlite_check(db, sqlite3_prepare_v2(db, 
+				"select count(1) "
+				"from conversation "
+				"where is_member = 1", -1, &stmt, NULL));
 	sqlite_check_ex(db, sqlite3_step(stmt), SQLITE_ROW);
 	int count = sqlite3_column_int(stmt, 0);
 	sqlite3_finalize(stmt);
 	return count;
 }
 
-void set_conversation_selection_pos(int new_selection) {
-	int max = count_conversations();
-	// don't run off the start of the list
-	if (new_selection < 0) {
-		new_selection = 0;
-	}
-	// don't run off the end of the list
-	if (new_selection >= max) {
-		new_selection = max-1;
-	}
-	set_key_value_int("conversation_selection_pos", new_selection);
+void set_selected_conversation(char* new_selection) {
+	set_key_value_string("selected_conversation", new_selection);
 }
-int get_conversation_selection_pos() {
-	return get_key_value_int("conversation_selection_pos", 0);
+// Caller should free
+char* get_selected_conversation() {
+	return get_key_value_string("selected_conversation", NULL);
 }
 
 void set_conversation_window_start(int new_window_start) {
@@ -304,27 +303,80 @@ const char* mode_desc() {
 	}
 }
 
-// caller should free the returned string
-const char* get_selected_conversation_id() {
-	int sp = get_conversation_selection_pos();
+
+int get_conversation_selection_pos() {
+	char* selected_conversation = get_selected_conversation();
 	sqlite3_stmt* stmt;
-	sqlite_check(db, sqlite3_prepare_v2(db, "select id "
-				"from conversation "
-				"where is_member = 1 "
-				"order by name "
-				"limit 1 "
-				"offset ? "
+	sqlite_check(db, sqlite3_prepare_v2(db, 
+				"with tmp(id, idx) as "
+					"(select id, (row_number() over (order by name)) - 1 "
+					"from conversation "
+					"where is_member = 1) "
+				"select idx from tmp where id = ? "
 				, -1, &stmt, NULL));
-	sqlite_check(db, sqlite3_bind_int(stmt, 1, sp));
+	sqlite_check(db, sqlite3_bind_text(stmt, 1, selected_conversation, -1, NULL));
 	int v = sqlite3_step(stmt);
-	char* res = NULL;
+	int res = 0;
 	if (v  == SQLITE_ROW) {
-		res = strdup(sqlite3_column_text(stmt, 0));
+		res = sqlite3_column_int(stmt, 0);
 	} else if (v  != SQLITE_DONE) {
 		sqlite_check(db, v);
 	}
 	sqlite3_finalize(stmt);
+	free(selected_conversation);
 	return res;
+}
+
+void select_conversation(bool next) {
+	char buf[200];
+	char* selected_conversation = get_selected_conversation();
+	char* to_select = NULL;
+	sqlite3_stmt* stmt;
+	if (selected_conversation != NULL) {
+		snprintf(buf, 200, 
+				"with tmp(id, nxt) as "
+					"(select id, %s(id, 1) over (order by name) "
+					"from conversation "
+					"where is_member = 1) "
+				"select nxt "
+				"from tmp "
+				"where id = ?", next ? "lead" : "lag");
+		dbg("executing %s", buf);
+		sqlite_check(db, sqlite3_prepare_v2(db, buf, -1, &stmt, NULL));
+		sqlite_check(db, sqlite3_bind_text(stmt, 1, selected_conversation, -1, NULL));
+		int v = sqlite3_step(stmt);
+		if (v == SQLITE_ROW) {
+			to_select = sqlite3_column_text(stmt, 0);
+		} else if (v != SQLITE_DONE) {
+			sqlite_check(db, v);
+		}
+	} else {
+		sqlite_check(db, sqlite3_prepare_v2(db, 
+				"select id "
+				"from conversation "
+				"where is_member = 1 "
+				"order by name "
+				"limit 1", -1, &stmt, NULL));
+		int v = sqlite3_step(stmt);
+		if (v == SQLITE_ROW) {
+			to_select = sqlite3_column_text(stmt, 0);
+		} else if (v != SQLITE_DONE) {
+			sqlite_check(db, v);
+		}
+	}
+	if (to_select != NULL) {
+		set_selected_conversation(to_select);
+	}
+	sqlite3_finalize(stmt);
+	free(selected_conversation);
+}
+
+void select_previous_conversation() {
+	select_conversation(false);
+}
+
+void select_next_conversation() {
+	select_conversation(true);
 }
 
 bool get_conversation_did_fetch(const char* id) {
@@ -368,6 +420,7 @@ void list_of_lists_destroy(list_t* list) {
 		list_destroy((list_t*)list_get_at(list, i));
 	}
 	list_destroy(list);
+	free(list);
 }
 
 size_t u_int32_size(const void* data) {
@@ -515,8 +568,7 @@ void render() {
 	}
 	bottom_pos++;
 
-	// Write the channels list, taking up the rest of the terminal height
-	// update the window start if required.
+	// Recalculate the display for channels list
 	int max_chans = height - (bottom_pos-1);
 	int conversation_selection_pos = get_conversation_selection_pos();
 	int conversation_window_start = get_conversation_window_start();
@@ -526,6 +578,7 @@ void render() {
 		set_conversation_window_start(conversation_selection_pos);
 	}
 
+	const char* selected_conversation_id = get_selected_conversation();
 	sqlite3_stmt* stmt;
 	sqlite_check(db, sqlite3_prepare_v2(db, 
 				"select id, name "
@@ -552,7 +605,7 @@ void render() {
 				sqlite_check(db, v);
 			}
 		} 
-		bool selected = conversation_window_start + j == conversation_selection_pos;
+		bool selected = selected_conversation_id != NULL && strcmp(id, selected_conversation_id) == 0;
 		int namelen = strlen(name);
 		for (int i=0; i<CHANS_WIDTH; i++) {
 			char ch = i<namelen ? name[i] : ' ';
@@ -568,7 +621,6 @@ void render() {
 	int user_start_x = CHANS_WIDTH;
 	int message_start_x = CHANS_WIDTH + USER_WIDTH;
 	int message_width = width - message_start_x;
-	const char* selected_conversation_id = get_selected_conversation_id();
 	if (selected_conversation_id != NULL) {
 		sqlite_check(db, sqlite3_prepare_v2(db, 
 					"select u.name, m.user, m.text, m.acknowledged "
@@ -591,18 +643,20 @@ void render() {
 					if (user == NULL) {
 						user = sqlite3_column_text(stmt, 1);
 					}
+					if (user == NULL) {
+						user = "unknown!";
+					}
 					const char* text = sqlite3_column_text(stmt, 2);
 					bool acked = sqlite3_column_int(stmt, 3);
 					list_t* ll = to_utf8_list(text);
 					list_t* lines = wrap(ll, message_width);
-					int lines_len = list_size(lines);
 					list_destroy(ll);
+					free(ll);
 
+					int lines_len = list_size(lines);
 					for (int k=0; k<lines_len; k++) {
 						list_t* line = list_get_at(lines, k);
 						int line_len = list_size(line);
-						char* line_chr = to_char_array(line);
-						free(line_chr);
 						int y = (j-lines_len) + 1 + k;
 
 						const char* usrstr = k == 0 ? user : "";
@@ -611,7 +665,7 @@ void render() {
 						for (int i=1; i<USER_WIDTH; i++) {
 							char ch = (i-1) < usrstrlen ? usrstr[i-1] : ' ';
 							int x = i + user_start_x;
-							render_char(ch, i+user_start_x, y, USER_FG, USER_BG);
+							render_char(ch, i+user_start_x, y, USER_FG, msg_bg_col);
 						}
 
 						for (int i=0; i<message_width; i++) {
@@ -650,7 +704,6 @@ void render() {
 }
 
 void handle_event_mode_normal(struct tb_event* evt) {
-	int conversation_selection_pos = get_conversation_selection_pos();
 	switch (evt->ch) {
 	case 'i':
 		set_current_mode(mode_insert);
@@ -659,10 +712,10 @@ void handle_event_mode_normal(struct tb_event* evt) {
 		set_current_mode(mode_search);
 		return;
 	case 'w': 
-		set_conversation_selection_pos(conversation_selection_pos-1);
+		select_previous_conversation();
 		return;
-	case 's': 
-		set_conversation_selection_pos(conversation_selection_pos+1);
+	case 's':
+		select_next_conversation();
 		return;
 	case 'q': 
 		quit = true;
@@ -742,7 +795,7 @@ bool send_message() {
 	time_t t = time(NULL);
 	snprintf(ts, 12, "%ld", t);
 	char* text = to_char_array(input_buffer);
-	const char* selected_conversation_id = get_selected_conversation_id();
+	const char* selected_conversation_id = get_selected_conversation();
 	sqlite3_stmt* stmt;
 	sqlite_check(db, sqlite3_prepare_v2(db, "insert into message (conversation, type, user, text, ts, pending, acknowledged) "
 				"values (?, ?, ?, ?, ?, ?, ?)", -1, &stmt, NULL));
@@ -887,8 +940,6 @@ static void handle_conversations(struct mg_connection* c, int ev, void* ev_data,
 		sqlite_check_ex(db, sqlite3_step(stmt), SQLITE_DONE);
 		sqlite3_finalize(stmt);
 		sqlite_check(db, sqlite3_exec(db, "commit", NULL, NULL, NULL));
-		// Update the conversation position now we modified the conversation table
-		set_conversation_selection_pos(get_conversation_selection_pos());
 	} else if (ev == MG_EV_ERROR) {
 		char* err = ev_data;
 		dbg("Error fetching conversations %s", err);
@@ -932,7 +983,8 @@ void handle_ws_message(struct mg_str payload) {
 					"json_extract(c, '$.channel'),"
 					"json_extract(c, '$.ts'),"
 					"json_extract(c, '$.user'),"
-					"json_extract(c, '$.text')"
+					"json_extract(c, '$.text') "
+				"from js"
 				, -1, &stmt, NULL));
 	sqlite_check(db, sqlite3_bind_text(stmt, 1, payload.ptr, payload.len, NULL));
 	sqlite_check_ex(db, sqlite3_step(stmt), SQLITE_DONE);
@@ -1111,12 +1163,12 @@ void fetch_selected_conversation(struct state_update* u) {
 		return;
 	}
 	char* key = get_key_value_key_by_rowid(u->rowid);
-	if (key == NULL || strcmp(key, "conversation_selection_pos") != 0){
+	if (key == NULL || strcmp(key, "selected_conversation") != 0){
 		free(key);
 		return;
 	}
 	free(key);
-	const char* selected_conversation_id = get_selected_conversation_id();
+	const char* selected_conversation_id = get_selected_conversation();
 	if  (get_conversation_did_fetch(selected_conversation_id)) {
 		free((void*)selected_conversation_id);
 		return;
