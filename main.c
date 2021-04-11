@@ -1205,20 +1205,22 @@ static void handle_conversation_history(struct mg_connection* c, int ev, void* e
 	}
 }
 
+bool did_key_change(struct state_update* u, const char* expected_key) {
+	if (strcmp(u->tablename, "kvs") != 0) {
+		return false;
+	}
+	char* key = get_key_value_key_by_rowid(u->rowid);
+	bool changed = key != NULL && strcmp(key, expected_key) == 0;
+	free(key);
+	return changed;
+}
+
 // Build up the conversations list for left hand panel
 // If the conversation table changes, or the search input buffer
 void update_conversations_list(struct state_update* u) {
-	if (strcmp(u->tablename, "kvs") != 0
+	if (!did_key_change(u, "search_input_buffer")
 	  && strcmp(u->tablename, "conversation") != 0) {
 		return;
-	}
-	if (strcmp(u->tablename, "kvs") ==  0) {
-		char* key = get_key_value_key_by_rowid(u->rowid);
-		if (key == NULL || strcmp(key, "search_input_buffer") != 0){
-			free(key);
-			return;
-		}
-		free(key);
 	}
 	sqlite_check(db, sqlite3_exec(db, 
 		"delete from conversation_list", NULL, NULL, NULL));
@@ -1281,15 +1283,9 @@ void update_conversations_list(struct state_update* u) {
 }
 
 void fetch_selected_conversation(struct state_update* u) {
-	if (strcmp(u->tablename, "kvs") != 0) {
+	if (!did_key_change(u, "selected_conversation")) {
 		return;
 	}
-	char* key = get_key_value_key_by_rowid(u->rowid);
-	if (key == NULL || strcmp(key, "selected_conversation") != 0){
-		free(key);
-		return;
-	}
-	free(key);
 	const char* selected_conversation_id = get_selected_conversation();
 	if  (get_conversation_did_fetch(selected_conversation_id)) {
 		free((void*)selected_conversation_id);
@@ -1302,20 +1298,23 @@ void fetch_selected_conversation(struct state_update* u) {
 }
 
 void reset_search(struct state_update* u) {
-	if (strcmp(u->tablename, "kvs") != 0) {
+	if (!did_key_change(u, "mode")) {
 		return;
 	}
-	char* key = get_key_value_key_by_rowid(u->rowid);
-	if (key == NULL || strcmp(key, "mode") != 0){
-		free(key);
-		return;
-	}
-	free(key);
 	if (get_current_mode() == mode_search) {
 		list_t lst;
 		list_init(&lst);
 		set_input_buffer(&lst, search_input_buffer);
 		set_input_cursor_pos(0, search_input_buffer);
+	}
+}
+
+void select_only_conversation(struct state_update* u) {
+	if (strcmp(u->tablename, "conversation_list") != 0) {
+		return;
+	}
+	if (count_conversations() == 1) {
+		select_first_conversation();
 	}
 }
 
@@ -1397,6 +1396,7 @@ int main(int argc, const char** argv) {
 	list_append(&state_listeners, send_pending_messages);
 	list_append(&state_listeners, update_conversations_list);
 	list_append(&state_listeners, reset_search);
+	list_append(&state_listeners, select_only_conversation);
 
 	// Install update hook
 	sqlite3_update_hook(db, update_hook, NULL);
