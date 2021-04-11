@@ -342,16 +342,37 @@ int get_conversation_selection_pos() {
 	return res;
 }
 
+void select_first_conversation() {
+	const char* to_select = NULL;
+	sqlite3_stmt* stmt;
+	sqlite_check(db, sqlite3_prepare_v2(db, 
+			"select id "
+			"from conversation_list "
+			"order by display_name "
+			"limit 1", -1, &stmt, NULL));
+	int v = sqlite3_step(stmt);
+	if (v == SQLITE_ROW) {
+		to_select = sqlite3_column_text(stmt, 0);
+	} else if (v != SQLITE_DONE) {
+		sqlite_check(db, v);
+	}
+
+	if (to_select != NULL) {
+		set_selected_conversation(to_select);
+	}
+	sqlite3_finalize(stmt);
+}
+
 void select_conversation(bool next) {
 	char buf[200];
 	char* selected_conversation = get_selected_conversation();
-	char* to_select = NULL;
 	sqlite3_stmt* stmt;
 	if (selected_conversation != NULL) {
+		char* to_select = NULL;
 		snprintf(buf, 200, 
-				"select %s "
-				"from conversation_list "
-				"where id = ?", next ? "next" : "prev");
+			"select %s "
+			"from conversation_list "
+			"where id = ?", next ? "next" : "prev");
 		dbg("executing %s", buf);
 		sqlite_check(db, sqlite3_prepare_v2(db, buf, -1, &stmt, NULL));
 		sqlite_check(db, sqlite3_bind_text(stmt, 1, selected_conversation, -1, NULL));
@@ -361,21 +382,14 @@ void select_conversation(bool next) {
 		} else if (v != SQLITE_DONE) {
 			sqlite_check(db, v);
 		}
-	} else {
-		sqlite_check(db, sqlite3_prepare_v2(db, 
-				"select id "
-				"from conversation_list "
-				"order by display_name "
-				"limit 1", -1, &stmt, NULL));
-		int v = sqlite3_step(stmt);
-		if (v == SQLITE_ROW) {
-			to_select = sqlite3_column_text(stmt, 0);
-		} else if (v != SQLITE_DONE) {
-			sqlite_check(db, v);
+
+		if (to_select != NULL) {
+			set_selected_conversation(to_select);
+		} else {
+			select_first_conversation();
 		}
-	}
-	if (to_select != NULL) {
-		set_selected_conversation(to_select);
+	} else {
+		select_first_conversation();
 	}
 	sqlite3_finalize(stmt);
 	free(selected_conversation);
@@ -605,6 +619,7 @@ void render() {
 	sqlite_check(db, sqlite3_prepare_v2(db, 
 				"select id, display_name "
 				"from conversation_list "
+				"order by display_name "
 				"limit ? "
 				"offset ? ", -1, &stmt, NULL));
 	sqlite_check(db, sqlite3_bind_int(stmt, 1, max_chans));
@@ -1218,16 +1233,23 @@ void update_conversations_list(struct state_update* u) {
 		sqlite3_stmt* stmt;
 		sqlite_check(db, sqlite3_prepare_v2(db, 
 			"insert into conversation_list (id, next, prev, idx, display_name) "
-			"select c.id, "
-				"lead(c.id, 1) over win, "
-				"lag(c.id, 1) over win, "
+			"with tmp(id, display_name, is_member, is_im) as ("
+				"select c.id, "
+					"case when is_im = 1 then u.name else c.name end as display_name, "
+					"c.is_member, "
+					"c.is_im "
+				"from conversation c "
+				"left outer join user u on u.id = c.user "
+			")"
+			"select id, "
+				"lead(id, 1) over win, "
+				"lag(id, 1) over win, "
 				"(row_number() over win) - 1, "
-				"case when is_im = 1 then u.name else c.name end as display_name "
-			"from conversation c "
-			"left outer join user u on u.id = c.user "
-			"where (c.is_member = 1 or c.is_im = 1) "
+				"display_name "
+			"from tmp "
+			"where (is_member = 1 or is_im = 1) "
 			"and display_name like ? "
-			"window win as (order by 0) "
+			"window win as (order by display_name) "
 			, -1, &stmt, NULL));
 		sqlite_check(db, sqlite3_bind_text(stmt, 1, p, -1, NULL));
 		sqlite_check_ex(db, sqlite3_step(stmt), SQLITE_DONE);
@@ -1236,15 +1258,22 @@ void update_conversations_list(struct state_update* u) {
 	} else {
 		sqlite_check(db, sqlite3_exec(db, 
 			"insert into conversation_list (id, next, prev, idx, display_name) "
-			"select c.id, "
-				"lead(c.id, 1) over win, "
-				"lag(c.id, 1) over win, "
+			"with tmp(id, display_name, is_member, is_im) as ("
+				"select c.id, "
+					"case when is_im = 1 then u.name else c.name end as display_name, "
+					"c.is_member, "
+					"c.is_im "
+				"from conversation c "
+				"left outer join user u on u.id = c.user "
+			")"
+			"select id, "
+				"lead(id, 1) over win, "
+				"lag(id, 1) over win, "
 				"(row_number() over win) - 1, "
-				"case when is_im = 1 then u.name else c.name end as display_name "
-			"from conversation c "
-			"left outer join user u on u.id = c.user "
-			"where (c.is_member = 1 or c.is_im = 1) "
-			"window win as (order by 0) "
+				"display_name "
+			"from tmp "
+			"where (is_member = 1 or is_im = 1) "
+			"window win as (order by display_name) "
 			, NULL, NULL, NULL));
 	}
 	list_destroy(sb);
@@ -1270,6 +1299,24 @@ void fetch_selected_conversation(struct state_update* u) {
 	mg_http_connect(&mgr, url, handle_conversation_history, (void*)selected_conversation_id);
 	set_conversation_did_fetch(selected_conversation_id, true);
 	free(url);
+}
+
+void reset_search(struct state_update* u) {
+	if (strcmp(u->tablename, "kvs") != 0) {
+		return;
+	}
+	char* key = get_key_value_key_by_rowid(u->rowid);
+	if (key == NULL || strcmp(key, "mode") != 0){
+		free(key);
+		return;
+	}
+	free(key);
+	if (get_current_mode() == mode_search) {
+		list_t lst;
+		list_init(&lst);
+		set_input_buffer(&lst, search_input_buffer);
+		set_input_cursor_pos(0, search_input_buffer);
+	}
 }
 
 bool process_state_update_queue() {
@@ -1349,6 +1396,7 @@ int main(int argc, const char** argv) {
 	list_append(&state_listeners, fetch_selected_conversation);
 	list_append(&state_listeners, send_pending_messages);
 	list_append(&state_listeners, update_conversations_list);
+	list_append(&state_listeners, reset_search);
 
 	// Install update hook
 	sqlite3_update_hook(db, update_hook, NULL);
