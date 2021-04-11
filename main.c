@@ -278,8 +278,8 @@ int count_conversations() {
 	sqlite3_stmt* stmt;
 	sqlite_check(db, sqlite3_prepare_v2(db, 
 				"select count(1) "
-				"from conversation "
-				"where is_member = 1", -1, &stmt, NULL));
+				"from conversation_list ", 
+				-1, &stmt, NULL));
 	sqlite_check_ex(db, sqlite3_step(stmt), SQLITE_ROW);
 	int count = sqlite3_column_int(stmt, 0);
 	sqlite3_finalize(stmt);
@@ -322,9 +322,8 @@ int get_conversation_selection_pos() {
 	sqlite3_stmt* stmt;
 	sqlite_check(db, sqlite3_prepare_v2(db, 
 				"with tmp(id, idx) as "
-					"(select id, (row_number() over (order by name)) - 1 "
-					"from conversation "
-					"where is_member = 1) "
+					"(select id, (row_number() over (order by display_name)) - 1 "
+					"from conversation_list) "
 				"select idx from tmp where id = ? "
 				, -1, &stmt, NULL));
 	sqlite_check(db, sqlite3_bind_text(stmt, 1, selected_conversation, -1, NULL));
@@ -348,9 +347,8 @@ void select_conversation(bool next) {
 	if (selected_conversation != NULL) {
 		snprintf(buf, 200, 
 				"with tmp(id, nxt) as "
-					"(select id, %s(id, 1) over (order by name) "
-					"from conversation "
-					"where is_member = 1) "
+					"(select id, %s(id, 1) over (order by display_name) "
+					"from conversation_list) "
 				"select nxt "
 				"from tmp "
 				"where id = ?", next ? "lead" : "lag");
@@ -366,9 +364,8 @@ void select_conversation(bool next) {
 	} else {
 		sqlite_check(db, sqlite3_prepare_v2(db, 
 				"select id "
-				"from conversation "
-				"where is_member = 1 "
-				"order by name "
+				"from conversation_list "
+				"order by display_name "
 				"limit 1", -1, &stmt, NULL));
 		int v = sqlite3_step(stmt);
 		if (v == SQLITE_ROW) {
@@ -606,10 +603,8 @@ void render() {
 	const char* selected_conversation_id = get_selected_conversation();
 	sqlite3_stmt* stmt;
 	sqlite_check(db, sqlite3_prepare_v2(db, 
-				"select id, name "
-				"from conversation "
-				"where is_member = 1 "
-				"order by name "
+				"select id, display_name "
+				"from conversation_list "
 				"limit ? "
 				"offset ? ", -1, &stmt, NULL));
 	sqlite_check(db, sqlite3_bind_int(stmt, 1, max_chans));
@@ -904,10 +899,6 @@ void handle_event_insert(struct tb_event* evt) {
 	update_input_buffer(evt, message_input_buffer, send_and_clear);
 }
 
-void update_conversations_list(struct input_buffer b) {
-	// Do nothing for now
-}
-
 void handle_event_search(struct tb_event* evt) {
 	update_input_buffer(evt, search_input_buffer, send_and_clear);
 }
@@ -969,11 +960,13 @@ static void handle_conversations(struct mg_connection* c, int ev, void* ev_data,
 		sqlite3_stmt* stmt;
 		sqlite_check(db, sqlite3_prepare_v2(db, 
 					"insert into conversation "
-					"(id, name, is_member) "
+					"(id, name, is_member, is_im, user) "
 					"select "
 						"json_extract(value, '$.id'), "
 						"json_extract(value, '$.name'), "
-						"json_extract(value, '$.is_member') "
+						"json_extract(value, '$.is_member'), "
+						"json_extract(value, '$.is_im'), "
+						"json_extract(value, '$.user') "
 					"from json_each(?, '$.channels')", -1, &stmt, NULL));
 		sqlite_check(db, sqlite3_bind_text(stmt, 1, hm->body.ptr, hm->body.len, NULL));
 		sqlite_check_ex(db, sqlite3_step(stmt), SQLITE_DONE);
@@ -1197,6 +1190,57 @@ static void handle_conversation_history(struct mg_connection* c, int ev, void* e
 	}
 }
 
+// Build up the conversations list for left hand panel
+// If the conversation table changes, or the search input buffer
+void update_conversations_list(struct state_update* u) {
+	if (strcmp(u->tablename, "kvs") != 0
+	  && strcmp(u->tablename, "conversation") != 0) {
+		return;
+	}
+	if (strcmp(u->tablename, "kvs") ==  0) {
+		char* key = get_key_value_key_by_rowid(u->rowid);
+		if (key == NULL || strcmp(key, "search_input_buffer") != 0){
+			free(key);
+			return;
+		}
+		free(key);
+	}
+	sqlite_check(db, sqlite3_exec(db, 
+		"delete from conversation_list", NULL, NULL, NULL));
+	list_t* sb = get_input_buffer(search_input_buffer);
+	if (list_size(sb) > 0) {
+		sqlite3_str* str = sqlite3_str_new(db);
+		char* sc = to_char_array(sb);
+		sqlite3_str_appendall(str, sc);
+		sqlite3_str_appendchar(str, 1, '%');
+		char* p = sqlite3_str_finish(str);
+		free(sc);
+		sqlite3_stmt* stmt;
+		sqlite_check(db, sqlite3_prepare_v2(db, 
+			"insert into conversation_list (id, display_name) "
+			"select c.id, case when is_im = 1 then u.name else c.name end as display_name "
+			"from conversation c "
+			"left outer join user u on u.id = c.user "
+			"where (c.is_member = 1 or c.is_im = 1) "
+			"and display_name like ? "
+			"order by display_name", -1, &stmt, NULL));
+		sqlite_check(db, sqlite3_bind_text(stmt, 1, p, -1, NULL));
+		sqlite_check_ex(db, sqlite3_step(stmt), SQLITE_DONE);
+		sqlite3_free(p);
+		sqlite3_finalize(stmt);
+	} else {
+		sqlite_check(db, sqlite3_exec(db, 
+			"insert into conversation_list (id, display_name) "
+			"select c.id, case when is_im = 1 then u.name else c.name end as display_name "
+			"from conversation c "
+			"left outer join user u on u.id = c.user "
+			"where (c.is_member = 1 or c.is_im = 1) "
+			"order by display_name", NULL, NULL, NULL));
+	}
+	list_destroy(sb);
+	
+}
+
 void fetch_selected_conversation(struct state_update* u) {
 	if (strcmp(u->tablename, "kvs") != 0) {
 		return;
@@ -1242,9 +1286,21 @@ void init_database() {
 				// Generic key-value store! Don't specify a datatype
 				"create table if not exists kvs (key text primary key, value);"
 
+				// Conversations
 				"create table if not exists conversation "
-				"(id text, name text, is_member int, json text, did_fetch int default 0);"
+				"(id text, "
+				"name text, "
+				"is_member int, "
+				"is_im int, "
+				"user text, "
+				"did_fetch int default 0);"
 				"create index if not exists idx_conversation_id on conversation(id);"
+
+				// View model of conversations
+				"create table if not exists conversation_list "
+				"(id text, "
+				"display_name text); "
+				"create index if not exists idx_conversation_list_id on conversation_list(id);"
 
 				"create table if not exists user (id text, name text);"
 
@@ -1279,6 +1335,7 @@ int main(int argc, const char** argv) {
 	// Register state_listeners
 	list_append(&state_listeners, fetch_selected_conversation);
 	list_append(&state_listeners, send_pending_messages);
+	list_append(&state_listeners, update_conversations_list);
 
 	// Install update hook
 	sqlite3_update_hook(db, update_hook, NULL);
