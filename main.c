@@ -60,8 +60,14 @@ FILE* dbgfile;
 #define sqlite_check(db, function_call) {\
 	int error_code = function_call; \
 	if (error_code != SQLITE_OK) { \
-		fprintf(errfile, "sqlite3 error at: %s:%d\n" \
-		   "%s", __FILE__, __LINE__, sqlite3_errmsg(db)); \
+		const char* sqlite_msg = sqlite3_errmsg(db); \
+		if (sqlite_msg != NULL) { \
+			fprintf(errfile, "sqlite3 error at: %s:%d\n" \
+			   "%s", __FILE__, __LINE__, sqlite_msg); \
+		} else { \
+			fprintf(errfile, "sqlite3 error null message at: %s:%d\n" \
+			   , __FILE__, __LINE__); \
+		} \
 		raise(SIGTERM); \
 	} \
 }
@@ -321,10 +327,7 @@ int get_conversation_selection_pos() {
 	char* selected_conversation = get_selected_conversation();
 	sqlite3_stmt* stmt;
 	sqlite_check(db, sqlite3_prepare_v2(db, 
-				"with tmp(id, idx) as "
-					"(select id, (row_number() over (order by display_name)) - 1 "
-					"from conversation_list) "
-				"select idx from tmp where id = ? "
+				"select idx from conversation_list where id = ? "
 				, -1, &stmt, NULL));
 	sqlite_check(db, sqlite3_bind_text(stmt, 1, selected_conversation, -1, NULL));
 	int v = sqlite3_step(stmt);
@@ -346,12 +349,9 @@ void select_conversation(bool next) {
 	sqlite3_stmt* stmt;
 	if (selected_conversation != NULL) {
 		snprintf(buf, 200, 
-				"with tmp(id, nxt) as "
-					"(select id, %s(id, 1) over (order by display_name) "
-					"from conversation_list) "
-				"select nxt "
-				"from tmp "
-				"where id = ?", next ? "lead" : "lag");
+				"select %s "
+				"from conversation_list "
+				"where id = ?", next ? "next" : "prev");
 		dbg("executing %s", buf);
 		sqlite_check(db, sqlite3_prepare_v2(db, buf, -1, &stmt, NULL));
 		sqlite_check(db, sqlite3_bind_text(stmt, 1, selected_conversation, -1, NULL));
@@ -1217,25 +1217,35 @@ void update_conversations_list(struct state_update* u) {
 		free(sc);
 		sqlite3_stmt* stmt;
 		sqlite_check(db, sqlite3_prepare_v2(db, 
-			"insert into conversation_list (id, display_name) "
-			"select c.id, case when is_im = 1 then u.name else c.name end as display_name "
+			"insert into conversation_list (id, next, prev, idx, display_name) "
+			"select c.id, "
+				"lead(c.id, 1) over win, "
+				"lag(c.id, 1) over win, "
+				"(row_number() over win) - 1, "
+				"case when is_im = 1 then u.name else c.name end as display_name "
 			"from conversation c "
 			"left outer join user u on u.id = c.user "
 			"where (c.is_member = 1 or c.is_im = 1) "
 			"and display_name like ? "
-			"order by display_name", -1, &stmt, NULL));
+			"window win as (order by 0) "
+			, -1, &stmt, NULL));
 		sqlite_check(db, sqlite3_bind_text(stmt, 1, p, -1, NULL));
 		sqlite_check_ex(db, sqlite3_step(stmt), SQLITE_DONE);
 		sqlite3_free(p);
 		sqlite3_finalize(stmt);
 	} else {
 		sqlite_check(db, sqlite3_exec(db, 
-			"insert into conversation_list (id, display_name) "
-			"select c.id, case when is_im = 1 then u.name else c.name end as display_name "
+			"insert into conversation_list (id, next, prev, idx, display_name) "
+			"select c.id, "
+				"lead(c.id, 1) over win, "
+				"lag(c.id, 1) over win, "
+				"(row_number() over win) - 1, "
+				"case when is_im = 1 then u.name else c.name end as display_name "
 			"from conversation c "
 			"left outer join user u on u.id = c.user "
 			"where (c.is_member = 1 or c.is_im = 1) "
-			"order by display_name", NULL, NULL, NULL));
+			"window win as (order by 0) "
+			, NULL, NULL, NULL));
 	}
 	list_destroy(sb);
 	
@@ -1299,6 +1309,9 @@ void init_database() {
 				// View model of conversations
 				"create table if not exists conversation_list "
 				"(id text, "
+				"next text, "
+				"prev text, "
+				"idx int, "
 				"display_name text); "
 				"create index if not exists idx_conversation_list_id on conversation_list(id);"
 
