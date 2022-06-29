@@ -1,6 +1,8 @@
 slack-term-c
 ============
 
+*Archived* - I never got very far with this project, and I have no intention of maintaining it. Code is here for interest's sake only.
+
 Terminal slack client, inspired by [slack-term](https://github.com/erroneousboat/slack-term)
 but written in C and sqlite because... why not?
 
